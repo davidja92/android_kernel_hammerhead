@@ -830,6 +830,23 @@ static ssize_t store_scaling_min_freq(struct cpufreq_policy *policy,
 	return count;
 }
 #endif
+
+#ifdef CONFIG_USERSPACE_VOLTAGE_CONTROL
+
+extern ssize_t acpuclk_get_vdd_levels_str(char *buf);
+extern void acpuclk_set_vdd(const char *buf);
+
+static ssize_t show_UV_mV_table(struct cpufreq_policy *policy, char *buf) {
+	return acpuclk_get_vdd_levels_str(buf);
+}
+
+static ssize_t store_UV_mV_table(struct cpufreq_policy *policy, const char *buf, size_t count) {
+	acpuclk_set_vdd(buf);
+	return count;
+}
+
+#endif
+
 cpufreq_freq_attr_ro_perm(cpuinfo_cur_freq, 0400);
 cpufreq_freq_attr_ro(cpuinfo_min_freq);
 cpufreq_freq_attr_ro(cpuinfo_max_freq);
@@ -847,6 +864,7 @@ cpufreq_freq_attr_rw(scaling_max_freq);
 #endif
 cpufreq_freq_attr_rw(scaling_governor);
 cpufreq_freq_attr_rw(scaling_setspeed);
+cpufreq_freq_attr_rw(dvfs_test);
 #ifdef CONFIG_USERSPACE_VOLTAGE_CONTROL
 cpufreq_freq_attr_rw(UV_mV_table);
 #endif
@@ -864,8 +882,9 @@ static struct attribute *default_attrs[] = {
 	&scaling_driver.attr,
 	&scaling_available_governors.attr,
 	&scaling_setspeed.attr,
+        &dvfs_test.attr,
 #ifdef CONFIG_USERSPACE_VOLTAGE_CONTROL
-      &UV_mV_table.attr,
+        &UV_mV_table.attr,
 #endif
 	NULL
 };
@@ -2234,7 +2253,6 @@ static int __init cpufreq_core_init(void)
 	cpufreq_global_kobject = kobject_create_and_add("cpufreq", &cpu_subsys.dev_root->kobj);
 	BUG_ON(!cpufreq_global_kobject);
 	register_syscore_ops(&cpufreq_syscore_ops);
-
 	return 0;
 }
 core_initcall(cpufreq_core_init);
