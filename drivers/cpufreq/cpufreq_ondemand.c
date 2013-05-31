@@ -118,18 +118,13 @@ static inline void dbs_timer_exit(struct cpu_dbs_info_s *dbs_info);
 static unsigned int dbs_enable;	/* number of CPUs using this policy */
 
 /*
- * dbs_mutex protects dbs_enable and dbs_info during start/stop.
+ * dbs_mutex protects dbs_enable in governor start/stop.
  */
 static DEFINE_MUTEX(dbs_mutex);
 
 static struct workqueue_struct *dbs_wq;
 
-struct dbs_work_struct {
-	struct work_struct work;
-	unsigned int cpu;
-};
-
-static DEFINE_PER_CPU(struct dbs_work_struct, dbs_refresh_work);
+static DEFINE_PER_CPU(struct work_struct, dbs_refresh_work);
 
 static struct dbs_tuners {
 	unsigned int sampling_rate;
@@ -583,10 +578,7 @@ static ssize_t store_powersave_bias(struct kobject *a, struct attribute *b,
 				POWERSAVE_BIAS_MINLEVEL));
 
 	dbs_tuners_ins.powersave_bias = input;
-
-	mutex_lock(&dbs_mutex);
 	get_online_cpus();
-
 	if (!bypass) {
 		if (reenable_timer) {
 			/* reinstate dbs timer */
@@ -639,23 +631,21 @@ skip_this_cpu:
 
 			if (dbs_info->cur_policy) {
 				/* cpu using ondemand, cancel dbs timer */
+				mutex_lock(&dbs_info->timer_mutex);
 				dbs_timer_exit(dbs_info);
 
-				mutex_lock(&dbs_info->timer_mutex);
 				ondemand_powersave_bias_setspeed(
 					dbs_info->cur_policy,
 					NULL,
 					input);
-				mutex_unlock(&dbs_info->timer_mutex);
 
+				mutex_unlock(&dbs_info->timer_mutex);
 			}
 skip_this_cpu_bypass:
 			unlock_policy_rwsem_write(cpu);
 		}
 	}
-
 	put_online_cpus();
-	mutex_unlock(&dbs_mutex);
 
 	return count;
 }
@@ -709,7 +699,7 @@ static void dbs_freq_increase(struct cpufreq_policy *p, unsigned int freq)
 static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 {
 	/* Extrapolated load of this CPU */
-	unsigned int load_at_max_freq = 0;
+	//unsigned int load_at_max_freq = 0;
 	unsigned int max_load_freq;
 	/* Current load across this CPU */
 	unsigned int cur_load = 0;
@@ -828,9 +818,9 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 	}
 
 	/* calculate the scaled load across CPU */
-	load_at_max_freq = (cur_load * policy->cur)/policy->cpuinfo.max_freq;
+	//load_at_max_freq = (cur_load * policy->cur)/policy->cpuinfo.max_freq;
 
-	cpufreq_notify_utilization(policy, load_at_max_freq);
+	//cpufreq_notify_utilization(policy, load_at_max_freq);
 	/* Check for frequency increase */
 	if (max_load_freq > dbs_tuners_ins.up_threshold * policy->cur) {
 		/* If switching to max speed, apply sampling_down_factor */
@@ -895,7 +885,7 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 				 ((dbs_tuners_ins.up_threshold_multi_core -
 				  dbs_tuners_ins.down_differential_multi_core) *
 				  policy->cur) &&
-				freq_next < dbs_tuners_ins.optimal_freq)
+				  freq_next < dbs_tuners_ins.optimal_freq)
 				freq_next = dbs_tuners_ins.optimal_freq;
 
 		}
@@ -991,15 +981,11 @@ static int should_io_be_busy(void)
 	return 0;
 }
 
-static void dbs_refresh_callback(struct work_struct *work)
+static void dbs_refresh_callback(struct work_struct *unused)
 {
 	struct cpufreq_policy *policy;
 	struct cpu_dbs_info_s *this_dbs_info;
-	struct dbs_work_struct *dbs_work;
-	unsigned int cpu;
-
-	dbs_work = container_of(work, struct dbs_work_struct, work);
-	cpu = dbs_work->cpu;
+	unsigned int cpu = smp_processor_id();
 
 	get_online_cpus();
 
@@ -1149,7 +1135,7 @@ static void dbs_input_event(struct input_handle *handle, unsigned int type,
 	}
 
 	for_each_online_cpu(i)
-		queue_work_on(i, dbs_wq, &per_cpu(dbs_refresh_work, i).work);
+		queue_work_on(i, dbs_wq, &per_cpu(dbs_refresh_work, i));
 }
 
 static int dbs_input_connect(struct input_handler *handler,
@@ -1288,6 +1274,7 @@ static int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 		dbs_timer_exit(this_dbs_info);
 
 		mutex_lock(&dbs_mutex);
+		mutex_destroy(&this_dbs_info->timer_mutex);
 		dbs_enable--;
 
 		for_each_cpu(j, policy->cpus) {
@@ -1365,12 +1352,9 @@ static int __init cpufreq_gov_dbs_init(void)
 	for_each_possible_cpu(i) {
 		struct cpu_dbs_info_s *this_dbs_info =
 			&per_cpu(od_cpu_dbs_info, i);
-		struct dbs_work_struct *dbs_work =
-			&per_cpu(dbs_refresh_work, i);
 
 		mutex_init(&this_dbs_info->timer_mutex);
-		INIT_WORK(&dbs_work->work, dbs_refresh_callback);
-		dbs_work->cpu = i;
+		INIT_WORK(&per_cpu(dbs_refresh_work, i), dbs_refresh_callback);
 
 		atomic_set(&this_dbs_info->src_sync_cpu, -1);
 		init_waitqueue_head(&this_dbs_info->sync_wq);
@@ -1385,8 +1369,7 @@ static int __init cpufreq_gov_dbs_init(void)
 
 static void __exit cpufreq_gov_dbs_exit(void)
 {
-	unsigned int i;
-
+	int i;
 	cpufreq_unregister_governor(&cpufreq_gov_ondemand);
 	for_each_possible_cpu(i) {
 		struct cpu_dbs_info_s *this_dbs_info =
